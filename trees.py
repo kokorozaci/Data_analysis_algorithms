@@ -366,9 +366,13 @@ class GradientBoostingRegressor:
                  n_estimators: int = 10,
                  min_samples_split: int = 2,
                  min_samples_leaf: int = 2,
-                 max_depth: int = 3) -> None:
+                 max_depth: int = 3,
+                 batch_size: int = 32,
+                 random_state: int = None) -> None:
         self.learning_rate = learning_rate
         self.n_estimators = n_estimators
+        np.random.seed(random_state)
+        self.batch_size = batch_size
         self.max_depth = max_depth
         self.min_samples_leaf = min_samples_leaf
         self.min_samples_split = min_samples_split
@@ -400,12 +404,13 @@ class GradientBoostingRegressor:
         # Будем записывать ошибки на обучающей и тестовой выборке на каждой итерации в список
         self.train_errors = []
         self.test_errors = []
-        batch_size = y_train.shape[0]//self.n_estimators
+        n_samples = y_train.shape[0]//self.batch_size
 
-        # if y_train.shape[0] % self.n_estimators:
-        #     batch_size += 1
+        if y_train.shape[0] % self.n_estimators:
+            n_samples += 1
 
-
+        indexes = np.arange(y_train.shape[0])
+        oob_index = set(indexes)
         for i in range(self.n_estimators):
             tree = DecisionTreeRegressor(max_depth=self.max_depth,
                                          min_samples_leaf=self.min_samples_leaf,
@@ -413,12 +418,14 @@ class GradientBoostingRegressor:
 
             # инициализируем бустинг начальным алгоритмом, возвращающим ноль,
             # поэтому первый алгоритм просто обучаем на выборке и добавляем в список
-            if i == self.n_estimators:
-                x_batch = X_train[i * batch_size:]
-                y_batch = y_train[i * batch_size:]
-            else:
-                x_batch = X_train[i*batch_size:(i+1)*batch_size]
-                y_batch = y_train[i*batch_size:(i+1)*batch_size]
+
+            np.random.shuffle(indexes)
+            x_batch = X_train[indexes[:n_samples]]
+            y_batch = y_train[indexes[:n_samples]]
+
+            if len(oob_index) > n_samples // 2:
+                oob_index -= set(indexes[:n_samples])
+
             if not self._trees:
                 # обучаем первое дерево на обучающей выборке
                 tree.fit(x_batch, y_batch)
@@ -427,13 +434,14 @@ class GradientBoostingRegressor:
                 self.test_errors.append(self.mean_squared_error(y_test, self.predict(X_test)))
             else:
                 # Получим ответы на текущей композиции
+
                 target = self.predict(x_batch)
 
                 # алгоритмы начиная со второго обучаем на сдвиг
                 tree.fit(x_batch, self.bias(y_batch, target))
 
                 self.train_errors.append(self.mean_squared_error(y_train, self.predict(X_train)))
-                self.test_errors.append(self.mean_squared_error(y_test, self.predict(X_test)))
+                self.test_errors.append(self.mean_squared_error(y_train[list(oob_index)], self.predict(X_train[list(oob_index)])))
 
             self._trees.append(tree)
 
@@ -474,8 +482,8 @@ X_train, X_test, y_train, y_test = model_selection.train_test_split(X, y, test_s
 
 
 tree = GradientBoostingRegressor(learning_rate=0.1,
-                                 n_estimators=22,
-                                 max_depth=7,
+                                 n_estimators=20,
+                                 max_depth=5,
                                  min_samples_leaf=2,
                                  min_samples_split=2)
 tree.fit(X_train, X_test, y_train, y_test)
