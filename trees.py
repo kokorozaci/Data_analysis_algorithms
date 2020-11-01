@@ -222,8 +222,7 @@ class DecisionTreeRegressor(TreeBuilder):
     def __init__(self,
                  max_depth: int = None,
                  min_samples_leaf: int = 1,
-                 min_samples_split: int = 2,
-                 ) -> None:
+                 min_samples_split: int = 2) -> None:
         super().__init__(max_depth=max_depth, min_samples_leaf=min_samples_leaf, min_samples_split=min_samples_split)
         self.criterion = self.variance
 
@@ -283,7 +282,7 @@ class RandomForestClassifier:
         return np.random.randint(0, data.shape[0], size=(self.n_estimators, data.shape[0]))
 
     def get_oob(self, data, bootstrap):
-        return np.array([list(set(np.arange(data.shape[0]))-set(row)) for row in bootstrap])
+        return np.array([list(set(np.arange(data.shape[0])) - set(row)) for row in bootstrap])
 
     def get_subsample(self, len_sample):
         # будем сохранять не сами признаки, а их индексы
@@ -360,18 +359,127 @@ class RandomForestClassifier:
         return self
 
 
-class RandomForestRegressor:
-    pass
+class GradientBoostingRegressor:
+
+    def __init__(self,
+                 learning_rate: float = 1,
+                 n_estimators: int = 10,
+                 min_samples_split: int = 2,
+                 min_samples_leaf: int = 2,
+                 max_depth: int = 3) -> None:
+        self.learning_rate = learning_rate
+        self.n_estimators = n_estimators
+        self.max_depth = max_depth
+        self.min_samples_leaf = min_samples_leaf
+        self.min_samples_split = min_samples_split
+        self._trees = None
+        self._coefs = [1] * n_estimators
+        self.train_errors = None
+        self.test_errors = None
+
+    def predict(self,
+                X: np.array) -> np.array:
+        # Реализуемый алгоритм градиентного бустинга будет инициализироваться нулевыми значениями,
+        # поэтому все деревья из списка trees_list уже являются дополнительными и при предсказании прибавляются с шагом eta
+        return np.array(
+            [sum([self.learning_rate * coef * alg.predict([x])[0] for alg, coef
+                  in zip(self._trees, self._coefs)]) for x in X])
+
+    @staticmethod
+    def mean_squared_error(y_train, y_pred):
+        return np.mean(np.square(y_train - y_pred))
+
+    @staticmethod
+    def bias(y, z):
+        return y - z
+
+    def fit(self, X_train, X_test, y_train, y_test):
+        # Деревья будем записывать в список
+        self._trees = []
+
+        # Будем записывать ошибки на обучающей и тестовой выборке на каждой итерации в список
+        self.train_errors = []
+        self.test_errors = []
+        batch_size = y_train.shape[0]//self.n_estimators
+
+        # if y_train.shape[0] % self.n_estimators:
+        #     batch_size += 1
 
 
-tree = RandomForestClassifier(criterion='gini',
-                              n_estimators=5,
-                              max_depth=3,
-                              min_samples_leaf=2,
-                              min_samples_split=2,
-                              random_state=2)
-# tree = DecisionTreeClassifier(criterion='entropy', max_depth=3, min_samples_leaf=2, min_samples_split=2)
-tree.fit(X_train, y_train)
-print(tree.oob_error)
-print(DecisionTreeClassifier.accuracy_metric(y_train, tree.predict(X_train)))
-print(DecisionTreeClassifier.accuracy_metric(y_test, tree.predict(X_test)))
+        for i in range(self.n_estimators):
+            tree = DecisionTreeRegressor(max_depth=self.max_depth,
+                                         min_samples_leaf=self.min_samples_leaf,
+                                         min_samples_split=self.min_samples_split)
+
+            # инициализируем бустинг начальным алгоритмом, возвращающим ноль,
+            # поэтому первый алгоритм просто обучаем на выборке и добавляем в список
+            if i == self.n_estimators:
+                x_batch = X_train[i * batch_size:]
+                y_batch = y_train[i * batch_size:]
+            else:
+                x_batch = X_train[i*batch_size:(i+1)*batch_size]
+                y_batch = y_train[i*batch_size:(i+1)*batch_size]
+            if not self._trees:
+                # обучаем первое дерево на обучающей выборке
+                tree.fit(x_batch, y_batch)
+
+                self.train_errors.append(self.mean_squared_error(y_train, self.predict(X_train)))
+                self.test_errors.append(self.mean_squared_error(y_test, self.predict(X_test)))
+            else:
+                # Получим ответы на текущей композиции
+                target = self.predict(x_batch)
+
+                # алгоритмы начиная со второго обучаем на сдвиг
+                tree.fit(x_batch, self.bias(y_batch, target))
+
+                self.train_errors.append(self.mean_squared_error(y_train, self.predict(X_train)))
+                self.test_errors.append(self.mean_squared_error(y_test, self.predict(X_test)))
+
+            self._trees.append(tree)
+
+        return self
+
+    def evaluate(self, X_train, X_test, y_train, y_test):
+        train_prediction = self.predict(X_train)
+
+        print(f'Ошибка алгоритма из {self.n_estimators} деревьев глубиной {self.max_depth} \
+        с шагом {self.learning_rate} на тренировочной выборке: {self.mean_squared_error(y_train, train_prediction)}')
+
+        test_prediction = self.predict(X_test)
+
+        print(f'Ошибка алгоритма из {self.n_estimators} деревьев глубиной {self.max_depth} \
+        с шагом {self.learning_rate} на тестовой выборке: {self.mean_squared_error(y_test, test_prediction)}')
+
+    def error_plot(self):
+        plt.xlabel('Iteration number')
+        plt.ylabel('MSE')
+        plt.xlim(0, self.n_estimators)
+        plt.plot(list(range(self.n_estimators)), self.train_errors, label='train error')
+        plt.plot(list(range(self.n_estimators)), self.test_errors, label='test error')
+        plt.legend(loc='upper right')
+        plt.show()
+
+from sklearn.datasets import load_diabetes
+import matplotlib.pyplot as plt
+
+X, y = load_diabetes(return_X_y=True)
+X_train, X_test, y_train, y_test = model_selection.train_test_split(X, y, test_size=0.25)
+
+# tree = RandomForestClassifier(criterion='gini',
+#                               n_estimators=5,
+#                               max_depth=3,
+#                               min_samples_leaf=2,
+#                               min_samples_split=2,
+#                               random_state=2)
+
+
+tree = GradientBoostingRegressor(learning_rate=0.1,
+                                 n_estimators=22,
+                                 max_depth=7,
+                                 min_samples_leaf=2,
+                                 min_samples_split=2)
+tree.fit(X_train, X_test, y_train, y_test)
+print(tree.evaluate(X_train, X_test, y_train, y_test))
+tree.error_plot()
+# print(DecisionTreeClassifier.accuracy_metric(y_train, tree.predict(X_train)))
+# print(DecisionTreeClassifier.accuracy_metric(y_test, tree.predict(X_test)))
